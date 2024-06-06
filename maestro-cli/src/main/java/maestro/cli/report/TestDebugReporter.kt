@@ -65,7 +65,7 @@ object TestDebugReporter {
                 CommandStatus.FAILED -> "❌"
                 else -> "﹖"
             }
-            val name = "screenshot-$status-${it.timestamp}-(${flowName}).png"
+            val name = "screenshot-$status-(${flowName}).png"
             val file = File(path.absolutePathString(), name)
 
             it.screenshot.copyTo(file)

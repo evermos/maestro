@@ -111,6 +111,12 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
                           p(classes = "card-text text-danger"){
                             +"${flow.failure.message}"
                           }
+                          div(classes = "text-center") {
+                            img(classes = "img-fluid") {
+                              attributes["src"] = "screenshot-❌-(${flow.name}).png"
+                              attributes["width"] = "10%"
+                            }
+                          }
                         }
                       }
                     }
