@@ -17,6 +17,40 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
     bufferedOut.close()
   }
 
+  private fun getTestStep(): Array<Array<String>> {
+        val debugOutputPath = TestDebugReporter.getDebugOutputPath()
+        val filePathLog = "${debugOutputPath}/maestro.log"
+        var reader: BufferedReader? = null
+        var testStep = emptyArray<String>()
+        var testSteps = emptyArray<Array<String>>()
+    
+        try {
+            reader = BufferedReader(FileReader(filePathLog))
+            var line: String = ""
+    
+            while (reader.readLine().also { line = it } != null) {
+                // Process each line
+                if(line.contains("m.cli.runner.TestSuiteInteractor") && !line.contains("Run") && !line.contains("Define variables") && !line.contains("Apply configuration")){
+                    if(line.contains("COMPLETED") || line.contains("FAILED")){
+                        testStep += line.replace("[INFO ] m.cli.runner.TestSuiteInteractor ", "")
+                    }
+                }
+                if(line.contains("m.cli.runner.TestSuiteInteractor - Stop") && line.contains("COMPLETED")){
+                    testSteps += testStep
+                    testStep = emptyArray<String>()
+                }
+            }
+        } catch (e: Exception) {
+        } finally {
+            try {
+                reader?.close()
+            } catch (e: Exception) {
+                println("An error occurred while closing the file: ${e.message}")
+            }
+        }
+        return testSteps
+  }
+
   private fun getFailedTest(summary: TestExecutionSummary): Array<String>{
     var failedTest = emptyArray<String>()
     for (suite in summary.suites) {
@@ -31,6 +65,8 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
 
   private fun buildHtmlReport(summary: TestExecutionSummary): String {
     var failedTest = getFailedTest(summary)
+    val testSteps = getTestStep()
+    var idx = 0
     return buildString {
       appendHTML().html {
         head {
@@ -100,21 +136,54 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
                     div(classes = "collapse") {
                       id = "${flow.name}"
                       div(classes = "card-body") {
-                        p(classes = "card-text") {
-                          +"Status: ${flow.status}"
-                          br{}
-                          +"Duration: ${flow.duration}"
-                          br{}
-                          +"File Name: ${flow.fileName}"
-                        }
-                        if(flow.failure != null) {
-                          p(classes = "card-text text-danger"){
-                            +"${flow.failure.message}"
+                        div(classes = "row") {
+                          div(classes = "col-md-8") {
+                            p(classes = "card-text") {
+                              +"Status: ${flow.status}"
+                              br{}
+                              +"Duration: ${flow.duration}"
+                              br{}
+                              +"File Name: ${flow.fileName}"
+                            }
+                            if(flow.failure != null) {
+                              p(classes = "card-text text-danger"){
+                                +"${flow.failure.message}"
+                              }
+                            }
+                            div(classes = "accordion") {
+                              div(classes = "accordion-item") {
+                                h5(classes = "accordion-header") {
+                                  button(classes = "accordion-button border-danger") {
+                                    attributes["types"] = "button"
+                                    attributes["data-bs-toggle"] = "collapse"
+                                    attributes["data-bs-target"] = "#step-${flow.name}"
+                                    attributes["aria-expanded"] = "false"
+                                    attributes["aria-controls"] = "step-${flow.name}"
+                                    +"Test Step Details"
+                                  }
+                                }
+                                div(classes = "collapse") {
+                                  id = "step-${flow.name}"
+                                  div(classes = "accordion-body") {
+                                    attributes["style"] = "max-height: 200px; overflow-y: auto;"
+                                    for (step in testSteps[idx]) {
+                                      +"${step}"
+                                      br{}
+                                    }
+                                  }
+                                  idx++
+                                }
+                              }
+                            }
                           }
-                          div(classes = "text-center") {
-                            img(classes = "img-fluid") {
-                              attributes["src"] = "screenshot-❌-(${flow.name}).png"
-                              attributes["width"] = "10%"
+                          div(classes = "col-md-4") {
+                            div(classes = "text-center") {
+                              if(flow.failure != null) {
+                                img(classes = "img-fluid") {
+                                  attributes["src"] = "screenshot-❌-(${flow.name}).png"
+                                  attributes["width"] = "13%"
+                                }
+                              }
                             }
                           }
                         }
