@@ -27,13 +27,21 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
         try {
             reader = BufferedReader(FileReader(filePathLog))
             var line: String = ""
+            var nextLine: String = ""
     
             while (reader.readLine().also { line = it } != null) {
                 // Process each line
-                if(line.contains("m.cli.runner.TestSuiteInteractor") && !line.contains("Run") && !line.contains("Define variables") && !line.contains("Apply configuration")){
-                    if(line.contains("COMPLETED") || line.contains("FAILED")){
-                        testStep += line.replace("[INFO ] m.cli.runner.TestSuiteInteractor ", "")
-                    }
+                if(line.contains("m.cli.runner.TestSuiteInteractor") && !line.contains("Run") && !line.contains("Define variables") && !line.contains("Apply configuration") && !line.contains("APP_ID")){ 
+                  if(line.contains("RUNNING") && line.contains("Input")) {
+                    nextLine = reader.readLine()
+                    testStep += nextLine.replace("[INFO ] maestro.Maestro ", "")
+                  }
+                  if(line.contains("COMPLETED") || line.contains("FAILED")){
+                      testStep += line.replace("[INFO ] m.cli.runner.TestSuiteInteractor ", "")
+                  }
+                }
+                if(line.contains("Launching app") || line.contains("Stopping app")) {
+                  testStep += line.replace("[INFO ] maestro.Maestro ", "")
                 }
                 if(line.contains("m.cli.runner.TestSuiteInteractor - Stop") && line.contains("COMPLETED")){
                     testSteps += testStep
@@ -181,7 +189,7 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
                               if(flow.failure != null) {
                                 img(classes = "img-fluid") {
                                   attributes["src"] = "screenshot-❌-(${flow.name}).png"
-                                  attributes["width"] = "13%"
+                                  attributes["width"] = "50%"
                                 }
                               }
                             }
