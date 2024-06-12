@@ -9,7 +9,7 @@ import maestro.cli.view.blue
 import maestro.cli.view.bold
 import maestro.cli.view.box
 import maestro.cli.view.faint
-import maestro.studio.MaestroStudio
+//import maestro.studio.MaestroStudio
 import picocli.CommandLine
 import java.awt.Desktop
 import java.net.ServerSocket
@@ -50,7 +50,7 @@ class StudioCommand : Callable<Int> {
 
         MaestroSessionManager.newSession(parent?.host, parent?.port, parent?.deviceId, true) { session ->
             val port = getFreePort()
-            MaestroStudio.start(port, session.maestro)
+            //MaestroStudio.start(port, session.maestro)
 
             val studioUrl = "http://localhost:${port}"
             val message = ("Maestro Studio".bold() + " is running at " + studioUrl.blue()).box()
