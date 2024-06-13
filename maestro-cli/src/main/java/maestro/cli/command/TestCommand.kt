@@ -201,5 +201,6 @@ class TestCommand : Callable<Int> {
         println()
         println("==== Debug output (logs & screenshots) ====")
         PrintUtils.message(TestDebugReporter.getDebugOutputPath().absolutePathString())
+        PrintUtils.message("${TestDebugReporter.getDebugOutputPath().absolutePathString()}/report.html")
     }
 }
