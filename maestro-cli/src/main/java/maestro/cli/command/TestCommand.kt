@@ -309,8 +309,7 @@ class TestCommand : Callable<Int> {
             val total = results.sumOf { it.second ?: 0 }
             val suites = results.mapNotNull { it.third }
 
-            suites.mergeSummaries()?.saveReport()
-
+            suites.mergeSummaries()?.saveReport(debugOutputPath)
             if (sharded) printShardsMessage(passed, total, suites)
             if (passed == total) 0 else 1
         }.onFailure {
@@ -342,11 +341,11 @@ class TestCommand : Callable<Int> {
         PrintUtils.message(box)
     }
 
-    private fun TestExecutionSummary.saveReport() {
+    private fun TestExecutionSummary.saveReport(reportOutputPath: Path) {
         val reporter = ReporterFactory.buildReporter(format, testSuiteName)
 
         format.fileExtension?.let { extension ->
-            (output ?: File("report$extension"))
+            File(reportOutputPath.toFile(), "report$extension")
                 .sink()
         }?.also { sink ->
             reporter.report(
