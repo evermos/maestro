@@ -325,44 +325,6 @@ class TestCommand : Callable<Int> {
         println()
         println("==== Debug output (logs & screenshots) ====")
         PrintUtils.message(TestDebugReporter.getDebugOutputPath().absolutePathString())
-        
-    }
-
-    private fun printShardsMessage(passedTests: Int, totalTests: Int, shardResults: List<TestExecutionSummary>) {
-        val box = buildString {
-            val lines = listOf("Passed: $passedTests/$totalTests") +
-                    shardResults.mapIndexed { index, result ->
-                        "[ ${result.suites.first().deviceName} ] - ${result.passedCount ?: 0}/${result.totalTests ?: 0}"
-                    }
-
-            val lineWidth = lines.maxOf(String::length)
-            append("┌${"─".repeat(lineWidth)}┐\n")
-            lines.forEach { append("│${it.padEnd(lineWidth)}│\n") }
-            append("└${"─".repeat(lineWidth)}┘")
-        }
-        PrintUtils.message(box)
-    }
-
-    private fun TestExecutionSummary.saveReport() {
-        val reporter = ReporterFactory.buildReporter(format, testSuiteName)
-
-        format.fileExtension?.let { extension ->
-            (output ?: File("report$extension"))
-                .sink()
-        }?.also { sink ->
-            reporter.report(
-                this,
-                sink,
-            )
-        }
-    }
-    private fun List<TestExecutionSummary>.mergeSummaries(): TestExecutionSummary? = reduceOrNull { acc, summary ->
-        TestExecutionSummary(
-            passed = acc.passed && summary.passed,
-            suites = acc.suites + summary.suites,
-            passedCount = sumOf { it.passedCount ?: 0 },
-            totalTests = sumOf { it.totalTests ?: 0 }
-        )
     }
 
     private fun printShardsMessage(passedTests: Int, totalTests: Int, shardResults: List<TestExecutionSummary>) {
