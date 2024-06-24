@@ -23,6 +23,7 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
         var reader: BufferedReader? = null
         var testStep = emptyArray<String>()
         var testSteps = emptyArray<Array<String>>()
+        val excludedWord = listOf("Run", "Define variables", "Apply configuration", "APP_ID", "Take screenshot")
     
         try {
             reader = BufferedReader(FileReader(filePathLog))
@@ -31,7 +32,10 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
     
             while (reader.readLine().also { line = it } != null) {
                 // Process each line
-                if(line.contains("m.cli.runner.TestSuiteInteractor") && !line.contains("Run") && !line.contains("Define variables") && !line.contains("Apply configuration") && !line.contains("APP_ID")){ 
+                val notContainsFilteredWord = excludedWord.none { filterWord ->
+                  line.contains(filterWord)
+                }
+                if(line.contains("m.cli.runner.TestSuiteInteractor") && notContainsFilteredWord){ 
                   if(line.contains("RUNNING") && line.contains("Input")) {
                     nextLine = reader.readLine()
                     testStep += nextLine.replace("[INFO ] maestro.Maestro ", "")
@@ -39,6 +43,10 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
                   if(line.contains("COMPLETED") || line.contains("FAILED")){
                       testStep += line.replace("[INFO ] m.cli.runner.TestSuiteInteractor ", "")
                   }
+                }
+                if(line.contains("Take screenshot") && line.contains("RUNNING")) {
+                  nextLine = reader.readLine()
+                  testStep += nextLine.replace("[INFO ] maestro.Maestro ", "")
                 }
                 if(line.contains("Launching app") || line.contains("Stopping app")) {
                   testStep += line.replace("[INFO ] maestro.Maestro ", "")
@@ -175,8 +183,17 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
                                   div(classes = "accordion-body") {
                                     attributes["style"] = "max-height: 200px; overflow-y: auto;"
                                     for (step in testSteps[idx]) {
-                                      +"${step}"
-                                      br{}
+                                      if(step.contains("Taking screenshot")) {
+                                        var screenshotPath = step.replace("- Taking screenshot: ","")
+                                        img(classes = "img-fluid") {
+                                          attributes["src"] = "${screenshotPath}"
+                                          attributes["width"] = "20%"
+                                        }
+                                        br{}
+                                      } else {
+                                        +"${step}"
+                                        br{}
+                                      }
                                     }
                                   }
                                   idx++
