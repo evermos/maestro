@@ -36,7 +36,7 @@ dependencies {
     implementation(project(":maestro-orchestra"))
     implementation(project(":maestro-ios"))
     implementation(project(":maestro-ios-driver"))
-    //implementation(project(":maestro-studio:server"))
+    implementation(project(":maestro-studio:server"))
     implementation(libs.dadb)
     implementation(libs.picocli)
     implementation(libs.jackson.core.databind)
