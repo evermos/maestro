@@ -19,8 +19,15 @@
 
 package maestro.orchestra
 
+import kotlinx.coroutines.runBlocking
 import maestro.*
 import maestro.Filters.asFilter
+import maestro.ai.AI
+import maestro.ai.AI.Companion.AI_KEY_ENV_VAR
+import maestro.ai.Defect
+import maestro.ai.Prediction
+import maestro.ai.antrophic.Claude
+import maestro.ai.openai.OpenAI
 import maestro.js.GraalJsEngine
 import maestro.js.JsEngine
 import maestro.js.RhinoJsEngine
@@ -35,16 +42,37 @@ import maestro.utils.Insights
 import maestro.utils.MaestroTimer
 import maestro.utils.StringUtils.toRegexSafe
 import okhttp3.OkHttpClient
+import okio.Buffer
+import okio.Sink
 import okio.buffer
 import okio.sink
 import java.io.File
 import java.lang.Long.max
-import java.nio.file.Files
 
+// TODO(bartkepacia): Use this in onCommandGeneratedOutput.
+//  Caveat:
+//    Large files should not be held in memory, instead they should be directly written to a Buffer
+//    that is streamed to disk.
+//  Idea:
+//    Orchestra should expose a callback like "onResourceRequested: (Command, CommandOutputType)"
+sealed class CommandOutput {
+    data class Screenshot(val screenshot: Buffer) : CommandOutput()
+    data class ScreenRecording(val screenRecording: Buffer) : CommandOutput()
+    data class AIDefects(val defects: List<Defect>, val screenshot: Buffer) : CommandOutput()
+}
+
+/**
+ * Orchestra translates high-level Maestro commands into method calls on the [Maestro] object.
+ * It's the glue between the CLI and platform-specific [Driver]s (encapsulated in the [Maestro] object).
+ * It's one of the core classes in this codebase.
+ *
+ * Orchestra should not know about:
+ *  - Specific platforms where tests can be executed, such as Android, iOS, or the web.
+ *  - File systems. It should instead write to [Sink]s that it requests from the caller.
+ */
 class Orchestra(
     private val maestro: Maestro,
-    private val stateDir: File? = null,
-    private val screenshotsDir: File? = null,
+    private val screenshotsDir: File? = null, // TODO(bartekpacia): Orchestra shouldn't interact with files directly.
     private val lookupTimeoutMs: Long = 17000L,
     private val optionalLookupTimeoutMs: Long = 7000L,
     private val httpClient: OkHttpClient? = null,
@@ -52,43 +80,31 @@ class Orchestra(
     private val onCommandStart: (Int, MaestroCommand) -> Unit = { _, _ -> },
     private val onCommandComplete: (Int, MaestroCommand) -> Unit = { _, _ -> },
     private val onCommandFailed: (Int, MaestroCommand, Throwable) -> ErrorResolution = { _, _, e -> throw e },
+    private val onCommandWarned: (Int, MaestroCommand) -> Unit = { _, _ -> },
     private val onCommandSkipped: (Int, MaestroCommand) -> Unit = { _, _ -> },
     private val onCommandReset: (MaestroCommand) -> Unit = {},
     private val onCommandMetadataUpdate: (MaestroCommand, CommandMetadata) -> Unit = { _, _ -> },
+    private val onCommandGeneratedOutput: (command: Command, defects: List<Defect>, screenshot: Buffer) -> Unit = { _, _, _ -> },
 ) {
 
     private lateinit var jsEngine: JsEngine
 
+    private val ai: AI? = initAI()
+
     private var copiedText: String? = null
 
     private var timeMsOfLastInteraction = System.currentTimeMillis()
-    private var deviceInfo: DeviceInfo? = null
 
     private var screenRecording: ScreenRecording? = null
 
     private val rawCommandToMetadata = mutableMapOf<MaestroCommand, CommandMetadata>()
 
-    /**
-     * If initState is provided, initialize app disk state with the provided OrchestraAppState and skip
-     * any initFlow execution. Otherwise, initialize app state with initFlow if defined.
-     */
-    fun runFlow(
-        commands: List<MaestroCommand>,
-        initState: OrchestraAppState? = null,
-    ): Boolean {
+    fun runFlow(commands: List<MaestroCommand>): Boolean {
         timeMsOfLastInteraction = System.currentTimeMillis()
 
         val config = YamlCommandReader.getConfig(commands)
 
         initJsEngine(config)
-
-        val state = initState ?: config?.initFlow?.let {
-            runInitFlow(it) ?: return false
-        }
-
-        if (state != null) {
-            maestro.clearAppState(state.appId)
-        }
 
         onFlowStart(commands)
 
@@ -134,32 +150,6 @@ class Orchestra(
         }
     }
 
-    /**
-     * Run the initFlow and return the resulting app OrchestraAppState which can be used to initialize
-     * app disk state when past into Orchestra.runFlow.
-     */
-    fun runInitFlow(
-        initFlow: MaestroInitFlow,
-    ): OrchestraAppState? {
-        val success = runFlow(
-            initFlow.commands,
-        )
-        if (!success) return null
-
-        maestro.stopApp(initFlow.appId)
-
-        val stateFile = if (stateDir == null) {
-            Files.createTempFile(null, ".state")
-        } else {
-            Files.createTempFile(stateDir.toPath(), null, ".state")
-        }
-
-        return OrchestraAppState(
-            appId = initFlow.appId,
-            file = stateFile.toFile(),
-        )
-    }
-
     fun executeCommands(
         commands: List<MaestroCommand>,
         config: MaestroConfig? = null,
@@ -197,19 +187,28 @@ class Orchestra(
                     )
                 }
                 Insights.onInsightsUpdated(callback)
+
                 try {
-                    executeCommand(evaluatedCommand, config)
-                    onCommandComplete(index, command)
+                    try {
+                        executeCommand(evaluatedCommand, config)
+                        onCommandComplete(index, command)
+                    } catch (e: MaestroException) {
+                        val isOptional = command.asCommand()?.optional == true || command.elementSelector()?.optional == true
+                        if (isOptional) throw CommandWarned(e.message)
+                        else throw e
+                    }
+                } catch (ignored: CommandWarned) {
+                    // Swallow exception, but add a warning as an insight
+                    Insights.report(Insight(message = ignored.message, level = Insight.Level.WARNING))
+                    onCommandWarned(index, command)
                 } catch (ignored: CommandSkipped) {
                     // Swallow exception
                     onCommandSkipped(index, command)
                 } catch (e: Throwable) {
-
-                    when (onCommandFailed(index, command, e)) {
+                    val errorResolution = onCommandFailed(index, command, e)
+                    when (errorResolution) {
                         ErrorResolution.FAIL -> return false
-                        ErrorResolution.CONTINUE -> {
-                            // Do nothing
-                        }
+                        ErrorResolution.CONTINUE -> {} // Do nothing
                     }
                 }
                 Insights.unregisterListener(callback)
@@ -224,7 +223,7 @@ class Orchestra(
         }
         val shouldUseGraalJs =
             config?.ext?.get("jsEngine") == "graaljs" || System.getenv("MAESTRO_USE_GRAALJS") == "true"
-        val platform = maestro.deviceInfo().platform.toString().lowercase()
+        val platform = maestro.cachedDeviceInfo.platform.toString().lowercase()
         jsEngine = if (shouldUseGraalJs) {
             httpClient?.let { GraalJsEngine(it, platform) } ?: GraalJsEngine(platform = platform)
         } else {
@@ -232,6 +231,19 @@ class Orchestra(
         }
     }
 
+    private fun initAI(): AI? {
+        val apiKey = System.getenv(AI_KEY_ENV_VAR) ?: return null
+        val modelName: String? = System.getenv(AI.AI_MODEL_ENV_VAR)
+
+        return if (modelName == null) OpenAI(apiKey = apiKey)
+        else if (modelName.startsWith("gpt-")) OpenAI(apiKey = apiKey, defaultModel = modelName)
+        else if (modelName.startsWith("claude-")) Claude(apiKey = apiKey, defaultModel = modelName)
+        else throw IllegalStateException("Unsupported AI model: $modelName")
+    }
+
+    /**
+     * Returns true if the command mutated device state (i.e. interacted with the device), false otherwise.
+     */
     private fun executeCommand(maestroCommand: MaestroCommand, config: MaestroConfig?): Boolean {
         val command = maestroCommand.asCommand()
 
@@ -256,6 +268,8 @@ class Orchestra(
             is SwipeCommand -> swipeCommand(command)
             is AssertCommand -> assertCommand(command)
             is AssertConditionCommand -> assertConditionCommand(command)
+            is AssertNoDefectsWithAICommand -> assertNoDefectsWithAICommand(command)
+            is AssertWithAICommand -> assertWithAICommand(command)
             is InputTextCommand -> inputTextCommand(command)
             is InputRandomCommand -> inputTextRandomCommand(command)
             is LaunchAppCommand -> launchAppCommand(command)
@@ -320,23 +334,76 @@ class Orchestra(
 
     private fun assertConditionCommand(command: AssertConditionCommand): Boolean {
         val timeout = (command.timeoutMs() ?: lookupTimeoutMs)
-        if (!evaluateCondition(command.condition, timeoutMs = timeout)) {
-            if (!isOptional(command.condition)) {
-                throw MaestroException.AssertionFailure(
-                    "Assertion is false: ${command.condition.description()}",
-                    maestro.viewHierarchy().root,
-                )
-            } else {
-                throw CommandSkipped
-            }
+        if (!evaluateCondition(command.condition, timeoutMs = timeout, commandOptional = command.optional)) {
+            throw MaestroException.AssertionFailure(
+                message = "Assertion is false: ${command.condition.description()}",
+                hierarchyRoot = maestro.viewHierarchy().root,
+            )
         }
 
         return false
     }
 
-    private fun isOptional(condition: Condition): Boolean {
-        return condition.visible?.optional == true
-                || condition.notVisible?.optional == true
+    private fun assertNoDefectsWithAICommand(command: AssertNoDefectsWithAICommand): Boolean = runBlocking {
+        // TODO(bartekpacia): make all of Orchestra suspending
+
+        if (ai == null) {
+            throw MaestroException.AINotAvailable("AI client is not available. Did you export $AI_KEY_ENV_VAR?")
+        }
+
+        val imageData = Buffer()
+        maestro.takeScreenshot(imageData, compressed = false)
+
+        val defects = Prediction.findDefects(
+            aiClient = ai,
+            screen = imageData.copy().readByteArray(),
+        )
+
+        if (defects.isNotEmpty()) {
+            onCommandGeneratedOutput(command, defects, imageData)
+
+            val word = if (defects.size == 1) "defect" else "defects"
+            throw MaestroException.AssertionFailure(
+                message = """
+                    |Found ${defects.size} possible $word:
+                    ${defects.joinToString("\n") { "| - ${it.reasoning}" }}
+                    |
+                    """.trimMargin(),
+                hierarchyRoot = maestro.viewHierarchy().root,
+            )
+        }
+
+        false
+    }
+
+    private fun assertWithAICommand(command: AssertWithAICommand): Boolean = runBlocking {
+        // TODO(bartekpacia): make all of Orchestra suspending
+
+        if (ai == null) {
+            throw MaestroException.AINotAvailable("AI client is not available. Did you export $AI_KEY_ENV_VAR?")
+        }
+
+        val imageData = Buffer()
+        maestro.takeScreenshot(imageData, compressed = false)
+
+        val defect = Prediction.performAssertion(
+            aiClient = ai,
+            screen = imageData.copy().readByteArray(),
+            assertion = command.assertion,
+        )
+
+        if (defect != null) {
+            onCommandGeneratedOutput(command, listOf(defect), imageData)
+            throw MaestroException.AssertionFailure(
+                message = """
+                    |Assertion "${command.assertion}" is false.
+                    |Reasoning: ${defect.reasoning}
+                    """.trimMargin(),
+                hierarchyRoot = maestro.viewHierarchy().root,
+            )
+        }
+
+        false
     }
 
     private fun evalScriptCommand(command: EvalScriptCommand): Boolean {
@@ -347,7 +414,7 @@ class Orchestra(
     }
 
     private fun runScriptCommand(command: RunScriptCommand): Boolean {
-        return if (evaluateCondition(command.condition)) {
+        return if (evaluateCondition(command.condition, commandOptional = command.optional)) {
             jsEngine.evaluateScript(
                 script = command.script,
                 env = command.env,
@@ -356,7 +423,7 @@ class Orchestra(
             )
 
             // We do not actually know if there were any mutations, but we assume there were
-            return true
+            true
         } else {
             throw CommandSkipped
         }
@@ -409,7 +476,7 @@ class Orchestra(
     }
 
     private fun scrollUntilVisible(command: ScrollUntilVisibleCommand): Boolean {
-        val endTime = System.currentTimeMillis() + command.timeout
+        val endTime = System.currentTimeMillis() + command.timeout.toLong()
         val direction = command.direction.toSwipeDirection()
         val deviceInfo = maestro.deviceInfo()
 
@@ -419,7 +486,7 @@ class Orchestra(
 
         do {
             try {
-                val element = findElement(command.selector, 500).element
+                val element = findElement(command.selector, command.optional, 500).element
                 val visibility = element.getVisiblePercentage(deviceInfo.widthGrid, deviceInfo.heightGrid)
 
                 if (command.centerElement && visibility > 0.1 && retryCenterCount <= maxRetryCenterCount) {
@@ -432,7 +499,7 @@ class Orchestra(
                 }
             } catch (ignored: MaestroException.ElementNotFound) {
             }
-            maestro.swipeFromCenter(direction, durationMs = command.scrollDuration)
+            maestro.swipeFromCenter(direction, durationMs = command.scrollDuration.toLong())
         } while (System.currentTimeMillis() < endTime)
 
         throw MaestroException.ElementNotFound(
@@ -465,7 +532,7 @@ class Orchestra(
         val checkCondition: () -> Boolean = {
             command.condition
                 ?.evaluateScripts(jsEngine)
-                ?.let { evaluateCondition(it) } != false
+                ?.let { evaluateCondition(it, commandOptional = command.optional) } != false
         }
 
         while (checkCondition() && counter < maxRuns) {
@@ -510,7 +577,7 @@ class Orchestra(
     }
 
     private fun runFlowCommand(command: RunFlowCommand, config: MaestroConfig?): Boolean {
-        return if (evaluateCondition(command.condition)) {
+        return if (evaluateCondition(command.condition, command.optional)) {
             runSubFlow(command.commands, config, command.config)
         } else {
             throw CommandSkipped
@@ -519,6 +586,7 @@ class Orchestra(
 
     private fun evaluateCondition(
         condition: Condition?,
+        commandOptional: Boolean,
         timeoutMs: Long? = null,
     ): Boolean {
         if (condition == null) {
@@ -526,14 +594,18 @@ class Orchestra(
         }
 
         condition.platform?.let {
-            if (it != maestro.deviceInfo().platform) {
+            if (it != maestro.cachedDeviceInfo.platform) {
                 return false
             }
         }
 
         condition.visible?.let {
             try {
-                findElement(it, timeoutMs = adjustedToLatestInteraction(timeoutMs ?: optionalLookupTimeoutMs))
+                findElement(
+                    selector = it,
+                    timeoutMs = adjustedToLatestInteraction(timeoutMs ?: optionalLookupTimeoutMs),
+                    optional = commandOptional,
+                )
             } catch (ignored: MaestroException.ElementNotFound) {
                 return false
             }
@@ -542,7 +614,11 @@ class Orchestra(
         condition.notVisible?.let {
             val result = MaestroTimer.withTimeout(adjustedToLatestInteraction(timeoutMs ?: optionalLookupTimeoutMs)) {
                 try {
-                    findElement(it, timeoutMs = 500L)
+                    findElement(
+                        selector = it,
+                        timeoutMs = 500L,
+                        optional = commandOptional,
+                    )
 
                     // If we got to that point, the element is still visible.
                     // Returning null to keep waiting.
@@ -602,10 +678,21 @@ class Orchestra(
                     updateMetadata(command, metadata)
 
                     return@mapIndexed try {
-                        executeCommand(evaluatedCommand, config)
-                            .also {
-                                onCommandComplete(index, command)
-                            }
+                        try {
+                            executeCommand(evaluatedCommand, config)
+                                .also {
+                                    onCommandComplete(index, command)
+                                }
+                        } catch (exception: MaestroException) {
+                            val isOptional = command.asCommand()?.optional == true || command.elementSelector()?.optional == true
+                            if (isOptional) throw CommandWarned(exception.message)
+                            else throw exception
+                        }
+                    } catch (ignored: CommandWarned) {
+                        // Swallow exception, but add a warning as an insight
+                        Insights.report(Insight(message = ignored.message, level = Insight.Level.WARNING))
+                        onCommandWarned(index, command)
+                        false
                     } catch (ignored: CommandSkipped) {
                         // Swallow exception
                         onCommandSkipped(index, command)
@@ -770,41 +857,33 @@ class Orchestra(
         command: TapOnElementCommand,
         retryIfNoChange: Boolean,
         waitUntilVisible: Boolean,
-        config: MaestroConfig?
+        config: MaestroConfig?,
     ): Boolean {
-        return try {
-            val result = findElement(command.selector)
-            maestro.tap(
-                result.element,
-                result.hierarchy,
-                retryIfNoChange,
-                waitUntilVisible,
-                command.longPress ?: false,
-                config?.appId,
-                tapRepeat = command.repeat,
-                waitToSettleTimeoutMs = command.waitToSettleTimeoutMs
-            )
+        val result = findElement(command.selector, optional = command.optional)
+        maestro.tap(
+            element = result.element,
+            initialHierarchy = result.hierarchy,
+            retryIfNoChange = retryIfNoChange,
+            waitUntilVisible = waitUntilVisible,
+            longPress = command.longPress ?: false,
+            appId = config?.appId,
+            tapRepeat = command.repeat,
+            waitToSettleTimeoutMs = command.waitToSettleTimeoutMs,
+        )
 
-            true
-        } catch (e: MaestroException.ElementNotFound) {
-            if (!command.selector.optional) {
-                throw e
-            } else {
-                false
-            }
-        }
+        return true
     }
 
     private fun tapOnPoint(
         command: TapOnPointCommand,
-        retryIfNoChange: Boolean
+        retryIfNoChange: Boolean,
     ): Boolean {
         maestro.tap(
-            command.x,
-            command.y,
-            retryIfNoChange,
-            command.longPress ?: false,
-            tapRepeat = command.repeat
+            x = command.x,
+            y = command.y,
+            retryIfNoChange = retryIfNoChange,
+            longPress = command.longPress ?: false,
+            tapRepeat = command.repeat,
         )
 
         return true
@@ -854,20 +933,16 @@ class Orchestra(
 
     private fun findElement(
         selector: ElementSelector,
-        timeoutMs: Long? = null
+        optional: Boolean,
+        timeoutMs: Long? = null,
     ): FindElementResult {
-        val timeout = timeoutMs
-            ?: adjustedToLatestInteraction(
-                if (selector.optional) {
-                    optionalLookupTimeoutMs
-                } else {
-                    lookupTimeoutMs
-                }
+        val timeout =
+            timeoutMs ?: adjustedToLatestInteraction(
+                if (optional) optionalLookupTimeoutMs
+                else lookupTimeoutMs,
             )
-        val (description, filterFunc) = buildFilter(
-            selector,
-            deviceInfo(),
-        )
+
+        val (description, filterFunc) = buildFilter(selector = selector)
         if (selector.childOf != null) {
             val parentViewHierarchy = findElementViewHierarchy(
                 selector.childOf,
@@ -900,11 +975,8 @@ class Orchestra(
         if (selector == null) {
             return maestro.viewHierarchy()
         }
-        val parentViewHierarchy = findElementViewHierarchy(selector.childOf, timeout);
-        val (description, filterFunc) = buildFilter(
-            selector,
-            deviceInfo(),
-        )
+        val parentViewHierarchy = findElementViewHierarchy(selector.childOf, timeout)
+        val (description, filterFunc) = buildFilter(selector = selector)
         return maestro.findElementWithTimeout(
             timeout,
             filterFunc,
@@ -915,12 +987,8 @@ class Orchestra(
         )
     }
 
-    private fun deviceInfo() = deviceInfo
-        ?: maestro.deviceInfo().also { deviceInfo = it }
-
     private fun buildFilter(
         selector: ElementSelector,
-        deviceInfo: DeviceInfo,
     ): FilterWithDescription {
         val filters = mutableListOf<ElementFilter>()
         val descriptions = mutableListOf<String>()
@@ -954,43 +1022,38 @@ class Orchestra(
         selector.below
             ?.let {
                 descriptions += "Below: ${it.description()}"
-                filters += Filters.below(buildFilter(it, deviceInfo).filterFunc)
+                filters += Filters.below(buildFilter(it).filterFunc)
             }
 
         selector.above
             ?.let {
                 descriptions += "Above: ${it.description()}"
-                filters += Filters.above(buildFilter(it, deviceInfo).filterFunc)
+                filters += Filters.above(buildFilter(it).filterFunc)
             }
 
         selector.leftOf
             ?.let {
                 descriptions += "Left of: ${it.description()}"
-                filters += Filters.leftOf(buildFilter(it, deviceInfo).filterFunc)
+                filters += Filters.leftOf(buildFilter(it).filterFunc)
             }
 
         selector.rightOf
             ?.let {
                 descriptions += "Right of: ${it.description()}"
-                filters += Filters.rightOf(buildFilter(it, deviceInfo).filterFunc)
+                filters += Filters.rightOf(buildFilter(it).filterFunc)
             }
 
         selector.containsChild
             ?.let {
                 descriptions += "Contains child: ${it.description()}"
-                filters += Filters.containsChild(findElement(it).element).asFilter()
+                filters += Filters.containsChild(findElement(it, optional = false).element).asFilter()
             }
 
         selector.containsDescendants
             ?.let { descendantSelectors ->
                 val descendantDescriptions = descendantSelectors.joinToString("; ") { it.description() }
                 descriptions += "Contains descendants: $descendantDescriptions"
-                filters += Filters.containsDescendants(descendantSelectors.map {
-                    buildFilter(
-                        it,
-                        deviceInfo
-                    ).filterFunc
-                })
+                filters += Filters.containsDescendants(descendantSelectors.map { buildFilter(it).filterFunc })
             }
 
         selector.traits
@@ -1071,7 +1134,7 @@ class Orchestra(
         val end = command.endPoint
         when {
             elementSelector != null && direction != null -> {
-                val uiElement = findElement(elementSelector)
+                val uiElement = findElement(elementSelector, optional = command.optional)
                 maestro.swipe(direction, uiElement.element, command.duration)
             }
 
@@ -1093,11 +1156,11 @@ class Orchestra(
 
     private fun adjustedToLatestInteraction(timeMs: Long) = max(
         0,
-        timeMs - (System.currentTimeMillis() - timeMsOfLastInteraction)
+        timeMs - (System.currentTimeMillis() - timeMsOfLastInteraction),
     )
 
     private fun copyTextFromCommand(command: CopyTextFromCommand): Boolean {
-        val result = findElement(command.selector)
+        val result = findElement(command.selector, optional = command.optional)
         copiedText = resolveText(result.element.treeNode.attributes)
             ?: throw MaestroException.UnableToCopyTextFromElement("Element does not contain text to copy: ${result.element}")
 
@@ -1133,6 +1196,8 @@ class Orchestra(
 
     private object CommandSkipped : Exception()
 
+    class CommandWarned(override val message: String) : Exception(message)
+
     data class CommandMetadata(
         val numberOfRuns: Int? = null,
         val evaluatedCommand: MaestroCommand? = null,
@@ -1152,8 +1217,3 @@ class Orchestra(
         private const val MAX_ERASE_CHARACTERS = 50
     }
 }
-
-data class OrchestraAppState(
-    val appId: String,
-    val file: File,
-)

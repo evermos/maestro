@@ -24,6 +24,100 @@ public Maestro Slack channel.
 
 Once your PR is merged, it usually takes about a week until it becomes publicly available and included into the next release.
 
+## Developing
+
+### Requirements
+
+Maestro's minimal deployment target is Java 8, and we strive to keep it this way
+for as long possible, because our analytics indicate that (as of September 2024) many
+users still use Java 8.
+
+For development, you need to use Java 11 or newer.
+
+If you made changes to the CLI, rebuilt it with `./gradlew :maestro-cli:installDist`. This will generate a startup shell
+script in `./maestro-cli/build/install/maestro/bin/maestro`. Use it instead of globally installed `maestro`.
+
+### Debugging
+
+Maestro stores logs for every test run in the following locations:
+
+- CLI Logs: `~/.maestro/tests/*/maestro.log`
+- iOS test runner logs: `~/Library/Logs/maestro/xctest_runner_logs`
+
+### Android artifacts
+
+Maestro requires 2 artifacts to run on Android:
+
+- `maestro-app.apk` - the host app. Does nothing.
+- `maestro-server.apk` - the test runner app. Starts an HTTP server inside an infinite JUnit/UIAutomator test.
+
+These artifacts are built by `./gradlew :maestro-android:assemble` and `./gradlew :maestro-android:assembleAndroidTest`, respectively.
+They are placed in `maestro-android/build/outputs/apk`, and are copied over to `maestro-client/src/main/resources`.
+
+### iOS artifacts
+
+Maestro requires 3 artifacts to run on iOS:
+
+- `maestro-driver-ios` - the host app for the test runner. Does nothing and is not installed.
+- `maestro-driver-iosUITests-Runner.app` - the test runner app. Starts an HTTP server inside an infinite XCTest. 
+- `maestro-driver-ios-config.xctestrun` - the configuration file required to run the test runner app.
+
+These artifacts are built by the `build-maestro-ios-runner.sh` script. It places them in `maestro-ios-driver/src/main/resources`.
+
+### Running standalone iOS XCTest runner app
+
+The iOS XCTest runner can be run without Maestro CLI. To do so, make sure you built the artifacts, and then run:
+
+```console
+./maestro-ios-xctest-runner/run-maestro-ios-runner.sh
+```
+
+This will use `xcodebuild test-without-building` to run the test runner on the connected iOS device. Now, you can reach
+the HTTP server that runs inside the XCTest runner app (by default on port 22087):
+
+```console
+curl -fsSL -X GET localhost:22087/deviceInfo | jq
+```
+
+<details>
+<summary>See example output</summary>
+
+```json
+{
+  "heightPoints": 852,
+  "heightPixels": 2556,
+  "widthPixels": 1179,
+  "widthPoints": 393
+}
+```
+
+</details>
+
+```console
+curl -fsSL -X POST localhost:22087/touch -d '
+{
+  "x": 150,
+  "y": 150,
+  "duration": 0.2
+}'
+```
+
+```console
+curl -sSL -X GET localhost:22087/swipe -d '
+{
+  "startX": 150,
+  "startY": 426,
+  "endX": 426,
+  "endY": 350,
+  "duration": 1
+}'
+```
+
+
+### Artifacts and the CLI
+
+`maestro-cli` depends on both `maestro-ios-driver` and `maestro-client`. This is how the CLI gets these artifacts.
+
 ## Testing
 
 There are 3 ways to test your changes:
@@ -34,7 +128,9 @@ There are 3 ways to test your changes:
 - Manual testing
   - Run `./maestro` instead of `maestro` to use your local code.
 - Unit tests
-  - All the other tests in the projects. Run them via `./gradlew test` (or from IDE) 
+  - All the other tests in the projects. Run them via `./gradlew test` (or from IDE)
+
+If you made changes to the iOS XCUITest driver, rebuild it by running `./maestro-ios-xctest-runner/build-maestro-ios-runner.sh`.
 
 ## Architectural considerations
 
@@ -53,6 +149,11 @@ Keep the following things in mind when working on a PR:
   - For that reason, `MaestroCommand` class should be JSON-serializable (and is a reason we haven't moved to `sealed class`)
 - We do not use mocks. Use fakes instead (e.g. `FakeDriver`).
 
+This graph (generated with [`./gradlew :generateDependencyGraph`][graph_plugin] in [PR #1834][pr_1834]) may be helpful
+to visualize relations between subprojects:
+
+![Project dependency graph](assets/project-dependency-graph.svg)
+
 ## How to
 
 ### Add new command
@@ -65,3 +166,6 @@ Follow these steps:
 - Handle command in `Orchestra` class.
   - If this is a new functionality, you might need to add new methods to `Maestro` and `Driver` APIs.
 - Add a new test to `IntegrationTest`.
+
+[graph_plugin]: https://github.com/vanniktech/gradle-dependency-graph-generator-plugin
+[pr_1834]: https://github.com/mobile-dev-inc/maestro/pull/1834

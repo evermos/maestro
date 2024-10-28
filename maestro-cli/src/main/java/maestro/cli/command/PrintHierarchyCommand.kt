@@ -23,6 +23,8 @@ import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import maestro.cli.App
 import maestro.cli.DisableAnsiMixin
+import maestro.cli.ShowHelpMixin
+import maestro.cli.report.TestDebugReporter
 import maestro.cli.session.MaestroSessionManager
 import maestro.cli.view.green
 import maestro.cli.view.yellow
@@ -43,15 +45,25 @@ class PrintHierarchyCommand : Runnable {
     @CommandLine.Mixin
     var disableANSIMixin: DisableAnsiMixin? = null
 
+    @CommandLine.Mixin
+    var showHelpMixin: ShowHelpMixin? = null
+
     @CommandLine.ParentCommand
     private val parent: App? = null
 
     override fun run() {
+        TestDebugReporter.install(
+            debugOutputPathAsString = null,
+            flattenDebugOutput = false,
+            printToConsole = parent?.verbose == true,
+        )
+
         MaestroSessionManager.newSession(
             host = parent?.host,
             port = parent?.port,
             driverHostPort = parent?.port,
             deviceId = parent?.deviceId,
+            platform = parent?.platform,
         ) { session ->
             Insights.onInsightsUpdated {
                 val message = StringBuilder()
@@ -69,7 +81,5 @@ class PrintHierarchyCommand : Runnable {
 
             println(hierarchy)
         }
-
-        System.err.println("Have you tried running “maestro studio” to visually inspect your app’s UI elements?".green())
     }
 }

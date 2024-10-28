@@ -19,11 +19,14 @@
 
 package maestro.cli.command
 
+import maestro.cli.App
 import maestro.cli.CliError
 import maestro.cli.DisableAnsiMixin
+import maestro.cli.ShowHelpMixin
 import maestro.cli.api.ApiClient
 import maestro.cli.cloud.CloudInteractor
 import maestro.cli.report.ReportFormat
+import maestro.cli.report.TestDebugReporter
 import maestro.cli.util.PrintUtils
 import maestro.orchestra.util.Env.withInjectedShellEnvVars
 import maestro.orchestra.workspace.WorkspaceExecutionPlanner
@@ -32,6 +35,8 @@ import picocli.CommandLine.Option
 import java.io.File
 import java.util.concurrent.Callable
 import java.util.concurrent.TimeUnit
+import maestro.orchestra.util.Env.withDefaultEnvVars
+import kotlin.io.path.absolutePathString
 
 @CommandLine.Command(
     name = "cloud",
@@ -49,8 +54,14 @@ class CloudCommand : Callable<Int> {
     @CommandLine.Mixin
     var disableANSIMixin: DisableAnsiMixin? = null
 
+    @CommandLine.Mixin
+    var showHelpMixin: ShowHelpMixin? = null
+
     @CommandLine.Parameters(hidden = true, arity = "0..2", description = ["App file and/or Flow file i.e <appFile> <flowFile>"])
     private lateinit var files: List<File>
+
+    @Option(names = ["--config"], description = ["Optional .yaml configuration file for Flows. If not provided, Maestro will look for a config.yaml file in the root directory."])
+    private var configFile: File? = null
 
     @Option(names = ["--app-file"], description = ["App binary to run your Flows against"])
     private var appFile: File? = null
@@ -61,41 +72,44 @@ class CloudCommand : Callable<Int> {
     @Option(order = 0, names = ["--api-key", "--apiKey"], description = ["API key"])
     private var apiKey: String? = null
 
-    @Option(order = 1, names = ["--api-url", "--apiUrl"], description = ["API base URL"])
-    private var apiUrl: String = "https://api.mobile.dev"
+    @Option(order = 1, names = ["--project-id", "--projectId"], description = ["Project Id"])
+    private var projectId: String? = null
 
-    @Option(order = 2, names = ["--mapping"], description = ["dSYM file (iOS) or Proguard mapping file (Android)"])
+    @Option(order = 2, names = ["--api-url", "--apiUrl"], description = ["API base URL"])
+    private var apiUrl: String? = null
+
+    @Option(order = 3, names = ["--mapping"], description = ["dSYM file (iOS) or Proguard mapping file (Android)"])
     private var mapping: File? = null
 
-    @Option(order = 3, names = ["--repo-owner", "--repoOwner"], description = ["Repository owner (ie: GitHub organization or user slug)"])
+    @Option(order = 4, names = ["--repo-owner", "--repoOwner"], description = ["Repository owner (ie: GitHub organization or user slug)"])
     private var repoOwner: String? = null
 
-    @Option(order = 4, names = ["--repo-name", "--repoName"], description = ["Repository name (ie: GitHub repo slug)"])
+    @Option(order = 5, names = ["--repo-name", "--repoName"], description = ["Repository name (ie: GitHub repo slug)"])
     private var repoName: String? = null
 
-    @Option(order = 5, names = ["--branch"], description = ["The branch this upload originated from"])
+    @Option(order = 6, names = ["--branch"], description = ["The branch this upload originated from"])
     private var branch: String? = null
 
-    @Option(order = 6, names = ["--commit-sha", "--commitSha"], description = ["The commit SHA of this upload"])
+    @Option(order = 7, names = ["--commit-sha", "--commitSha"], description = ["The commit SHA of this upload"])
     private var commitSha: String? = null
 
-    @Option(order = 7, names = ["--pull-request-id", "--pullRequestId"], description = ["The ID of the pull request this upload originated from"])
+    @Option(order = 8, names = ["--pull-request-id", "--pullRequestId"], description = ["The ID of the pull request this upload originated from"])
     private var pullRequestId: String? = null
 
-    @Option(order = 8, names = ["-e", "--env"], description = ["Environment variables to inject into your Flows"])
+    @Option(order = 9, names = ["-e", "--env"], description = ["Environment variables to inject into your Flows"])
     private var env: Map<String, String> = emptyMap()
 
-    @Option(order = 9, names = ["--name"], description = ["Name of the upload"])
+    @Option(order = 10, names = ["--name"], description = ["Name of the upload"])
     private var uploadName: String? = null
 
-    @Option(order = 10, names = ["--async"], description = ["Run the upload asynchronously"])
+    @Option(order = 11, names = ["--async"], description = ["Run the upload asynchronously"])
     private var async: Boolean = false
 
-    @Option(order = 11, names = ["--android-api-level"], description = ["Android API level to run your flow against"])
+    @Option(order = 12, names = ["--android-api-level"], description = ["Android API level to run your flow against"])
     private var androidApiLevel: Int? = null
 
     @Option(
-        order = 12,
+        order = 13,
         names = ["--include-tags"],
         description = ["List of tags that will remove the Flows that does not have the provided tags"],
         split = ",",
@@ -103,7 +117,7 @@ class CloudCommand : Callable<Int> {
     private var includeTags: List<String> = emptyList()
 
     @Option(
-        order = 13,
+        order = 14,
         names = ["--exclude-tags"],
         description = ["List of tags that will remove the Flows containing the provided tags"],
         split = ",",
@@ -111,7 +125,7 @@ class CloudCommand : Callable<Int> {
     private var excludeTags: List<String> = emptyList()
 
     @Option(
-        order = 14,
+        order = 15,
         names = ["--format"],
         description = ["Test report format (default=\${DEFAULT-VALUE}): \${COMPLETION-CANDIDATES}"],
     )
@@ -124,19 +138,19 @@ class CloudCommand : Callable<Int> {
     private var testSuiteName: String? = null
 
     @Option(
-        order = 15,
+        order = 16,
         names = ["--output"],
         description = ["File to write report into (default=report.xml)"],
     )
     private var output: File? = null
 
-    @Option(order = 16, names = ["--ios-version"], description = ["iOS version to run your flow against"])
+    @Option(order = 17, names = ["--ios-version"], description = ["iOS version to run your flow against"])
     private var iOSVersion: String? = null
 
-    @Option(order = 17, names = ["--app-binary-id", "--appBinaryId"], description = ["The ID of the app binary previously uploaded to Maestro Cloud"])
+    @Option(order = 18, names = ["--app-binary-id", "--appBinaryId"], description = ["The ID of the app binary previously uploaded to Maestro Cloud"])
     private var appBinaryId: String? = null
 
-    @Option(order = 18, names = ["--device-locale"], description = ["Locale that will be set to a device, ISO-639-1 code and uppercase ISO-3166-1 code i.e. \"de_DE\" for Germany"])
+    @Option(order = 19, names = ["--device-locale"], description = ["Locale that will be set to a device, ISO-639-1 code and uppercase ISO-3166-1 code i.e. \"de_DE\" for Germany"])
     private var deviceLocale: String? = null
 
     @Option(hidden = true, names = ["--fail-on-cancellation"], description = ["Fail the command if the upload is marked as cancelled"])
@@ -151,12 +165,32 @@ class CloudCommand : Callable<Int> {
     @Option(hidden = true, names = ["--timeout"], description = ["Minutes to wait until all flows complete"])
     private var resultWaitTimeout = 60
 
-    override fun call(): Int {
+    @CommandLine.ParentCommand
+    private val parent: App? = null
 
+    override fun call(): Int {
+        TestDebugReporter.install(
+            debugOutputPathAsString = null,
+            flattenDebugOutput = false,
+            printToConsole = parent?.verbose == true,
+        )
+        
         validateFiles()
         validateWorkSpace()
 
         // Upload
+        val apiUrl = apiUrl ?: run {
+            if (projectId != null) {
+                "https://api.copilot.mobile.dev/v2/project/$projectId"
+            } else {
+                "https://api.mobile.dev"
+            }
+        }
+
+        env = env
+            .withInjectedShellEnvVars()
+            .withDefaultEnvVars(flowsFile)
+
         return CloudInteractor(
             client = ApiClient(apiUrl),
             failOnTimeout = failOnTimeout,
@@ -166,7 +200,7 @@ class CloudCommand : Callable<Int> {
             flowFile = flowsFile,
             appFile = appFile,
             mapping = mapping,
-            env = env.withInjectedShellEnvVars(),
+            env = env,
             uploadName = uploadName,
             repoOwner = repoOwner,
             repoName = repoName,
@@ -185,6 +219,7 @@ class CloudCommand : Callable<Int> {
             testSuiteName = testSuiteName,
             disableNotifications = disableNotifications,
             deviceLocale = deviceLocale,
+            projectId = projectId,
         )
     }
 
@@ -193,9 +228,10 @@ class CloudCommand : Callable<Int> {
             PrintUtils.message("Evaluating workspace...")
             WorkspaceExecutionPlanner
                 .plan(
-                    input = flowsFile.toPath().toAbsolutePath(),
+                    input = setOf(flowsFile.toPath().toAbsolutePath()),
                     includeTags = includeTags,
                     excludeTags = excludeTags,
+                    config = configFile?.toPath()?.toAbsolutePath(),
                 )
         } catch (e: Exception) {
             throw CliError("Upload aborted. Received error when evaluating workspace: ${e.message}")
@@ -203,6 +239,10 @@ class CloudCommand : Callable<Int> {
     }
 
     private fun validateFiles() {
+
+        if (configFile != null && configFile?.exists()?.not() == true) {
+            throw CliError("The config file ${configFile?.absolutePath} does not exist.")
+        }
 
         // Maintains backwards compatibility for this syntax: maestro cloud <appFile> <workspace>
         // App file can be optional now

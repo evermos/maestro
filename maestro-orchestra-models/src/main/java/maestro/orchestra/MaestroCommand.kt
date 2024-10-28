@@ -36,6 +36,8 @@ data class MaestroCommand(
     val backPressCommand: BackPressCommand? = null,
     @Deprecated("Use assertConditionCommand") val assertCommand: AssertCommand? = null,
     val assertConditionCommand: AssertConditionCommand? = null,
+    val assertNoDefectsWithAICommand: AssertNoDefectsWithAICommand? = null,
+    val assertWithAICommand: AssertWithAICommand? = null,
     val inputTextCommand: InputTextCommand? = null,
     val inputRandomTextCommand: InputRandomCommand? = null,
     val launchAppCommand: LaunchAppCommand? = null,
@@ -76,6 +78,8 @@ data class MaestroCommand(
         backPressCommand = command as? BackPressCommand,
         assertCommand = command as? AssertCommand,
         assertConditionCommand = command as? AssertConditionCommand,
+        assertNoDefectsWithAICommand = command as? AssertNoDefectsWithAICommand,
+        assertWithAICommand = command as? AssertWithAICommand,
         inputTextCommand = command as? InputTextCommand,
         inputRandomTextCommand = command as? InputRandomCommand,
         launchAppCommand = command as? LaunchAppCommand,
@@ -116,6 +120,8 @@ data class MaestroCommand(
         backPressCommand != null -> backPressCommand
         assertCommand != null -> assertCommand
         assertConditionCommand != null -> assertConditionCommand
+        assertNoDefectsWithAICommand != null -> assertNoDefectsWithAICommand
+        assertWithAICommand != null -> assertWithAICommand
         inputTextCommand != null -> inputTextCommand
         inputRandomTextCommand != null -> inputRandomTextCommand
         launchAppCommand != null -> launchAppCommand
@@ -148,6 +154,18 @@ data class MaestroCommand(
         else -> null
     }
 
+    fun elementSelector(): ElementSelector? {
+        return when {
+            tapOnElement?.selector != null -> tapOnElement.selector
+            swipeCommand?.elementSelector != null -> swipeCommand.elementSelector
+            copyTextCommand?.selector != null -> copyTextCommand.selector
+            assertConditionCommand?.condition?.visible != null -> assertConditionCommand.condition.visible
+            assertConditionCommand?.condition?.notVisible != null -> assertConditionCommand.condition.notVisible
+            scrollUntilVisible?.selector != null -> scrollUntilVisible.selector
+            else -> null
+        }
+    }
+
     fun evaluateScripts(jsEngine: JsEngine): MaestroCommand {
         return asCommand()
             ?.let { MaestroCommand(it.evaluateScripts(jsEngine)) }
@@ -157,4 +175,10 @@ data class MaestroCommand(
     fun description(): String {
         return asCommand()?.description() ?: "No op"
     }
+
+    override fun toString(): String =
+        asCommand()?.let { command ->
+            val argName = command::class.simpleName?.replaceFirstChar(Char::lowercaseChar) ?: "command"
+            "MaestroCommand($argName=$command)"
+        } ?: "MaestroCommand()"
 }

@@ -19,19 +19,30 @@
 
 package maestro.cli
 
-import maestro.cli.command.*
+import maestro.cli.analytics.Analytics
+import maestro.cli.command.BugReportCommand
+import maestro.cli.command.CloudCommand
 import maestro.cli.command.DownloadSamplesCommand
+import maestro.cli.command.LoginCommand
 import maestro.cli.command.LogoutCommand
+import maestro.cli.command.PrintHierarchyCommand
+import maestro.cli.command.QueryCommand
+import maestro.cli.command.RecordCommand
+import maestro.cli.command.StartDeviceCommand
+import maestro.cli.command.StudioCommand
+import maestro.cli.command.TestCommand
+import maestro.cli.command.UploadCommand
 import maestro.cli.update.Updates
 import maestro.cli.util.ErrorReporter
 import maestro.cli.view.box
 import maestro.debuglog.DebugLogStore
+import picocli.AutoComplete.GenerateCompletion
 import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import java.util.Properties
-import kotlin.random.Random
 import kotlin.system.exitProcess
+import maestro.cli.util.ChangeLogUtils
 
 @Command(
     name = "maestro",
@@ -47,18 +58,21 @@ import kotlin.system.exitProcess
         LogoutCommand::class,
         BugReportCommand::class,
         StudioCommand::class,
-        StartDeviceCommand::class
+        StartDeviceCommand::class,
+        GenerateCompletion::class,
     ]
 )
 class App {
-
     @CommandLine.Mixin
     var disableANSIMixin: DisableAnsiMixin? = null
 
-    @Option(names = ["-v", "--version"], versionHelp = true)
+    @CommandLine.Mixin
+    var showHelpMixin: ShowHelpMixin? = null
+
+    @Option(names = ["-v", "--version"], versionHelp = true, description = ["Display CLI version"])
     var requestedVersion: Boolean? = false
 
-    @Option(names = ["-p", "--platform"], hidden = true)
+    @Option(names = ["-p", "--platform"], description = ["(Optional) Select a platform to run on"])
     var platform: String? = null
 
     @Option(names = ["--host"], hidden = true)
@@ -67,8 +81,14 @@ class App {
     @Option(names = ["--port"], hidden = true)
     var port: Int? = null
 
-    @Option(names = ["--device", "--udid"], description = ["(Optional) Device ID to run on explicitly, can be a comma separated list of IDs: --device \"Emulator_1,Emulator_2\" "])
+    @Option(
+        names = ["--device", "--udid"],
+        description = ["(Optional) Device ID to run on explicitly, can be a comma separated list of IDs: --device \"Emulator_1,Emulator_2\" "],
+    )
     var deviceId: String? = null
+
+    @Option(names = ["--verbose"], description = ["Enable verbose logging"])
+    var verbose: Boolean = false
 }
 
 private fun printVersion() {
@@ -84,8 +104,12 @@ fun main(args: Array<String>) {
     // https://stackoverflow.com/a/17544259
     System.setProperty("apple.awt.UIElement", "true")
 
+    Analytics.maybeMigrate()
+    Analytics.maybeAskToEnableAnalytics()
+
     Dependencies.install()
     Updates.fetchUpdatesAsync()
+    Analytics.maybeUploadAnalyticsAsync()
 
     val commandLine = CommandLine(App())
         .setUsageHelpWidth(160)
@@ -94,25 +118,26 @@ fun main(args: Array<String>) {
         .setExecutionExceptionHandler { ex, cmd, cmdParseResult ->
             runCatching { ErrorReporter.report(ex, cmdParseResult) }
 
-            val message = if (ex is CliError) {
-                ex.message
-            } else {
-                ex.stackTraceToString()
-            }
-
-            println()
-
             // make errors red
-            cmd.colorScheme =  CommandLine.Help.ColorScheme.Builder()
+            cmd.colorScheme = CommandLine.Help.ColorScheme.Builder()
                 .errors(CommandLine.Help.Ansi.Style.fg_red)
                 .build()
 
             cmd.err.println(
-                cmd.colorScheme.errorText(message)
+                cmd.colorScheme.errorText(ex.message)
             )
+
+            // Print stack trace
+            if (ex !is CliError) {
+                cmd.err.println("\nThe stack trace was:")
+                cmd.err.println(ex.stackTraceToString())
+            }
 
             1
         }
+
+    val generateCompletionCommand = commandLine.subcommands["generate-completion"]
+    generateCompletionCommand?.commandSpec?.usageMessage()?.hidden(true)
 
     val exitCode = commandLine
         .execute(*args)
@@ -121,11 +146,18 @@ fun main(args: Array<String>) {
 
     val newVersion = Updates.checkForUpdates()
     if (newVersion != null) {
+        Updates.fetchChangelogAsync()
         System.err.println()
-        System.err.println(
-            ("A new version of the Maestro CLI is available ($newVersion). Upgrade command:\n" +
-                    "curl -Ls \"https://get.maestro.mobile.dev\" | bash").box()
-        )
+        val changelog = Updates.getChangelog()
+        val anchor = newVersion.toString().replace(".", "")
+        System.err.println(listOf(
+            "A new version of the Maestro CLI is available ($newVersion).\n",
+            "See what's new:",
+            "https://github.com/mobile-dev-inc/maestro/blob/main/CHANGELOG.md#$anchor",
+            ChangeLogUtils.print(changelog),
+            "Upgrade command:",
+            "curl -Ls \"https://get.maestro.mobile.dev\" | bash",
+        ).joinToString("\n").box())
     }
 
     if (commandLine.isVersionHelpRequested) {

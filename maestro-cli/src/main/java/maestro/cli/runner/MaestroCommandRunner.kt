@@ -19,84 +19,55 @@
 
 package maestro.cli.runner
 
-import io.ktor.client.utils.EmptyContent.status
 import maestro.Maestro
 import maestro.MaestroException
 import maestro.cli.device.Device
+import maestro.cli.report.SingleScreenFlowAIOutput
 import maestro.cli.report.CommandDebugMetadata
-import maestro.cli.report.FlowDebugMetadata
-import maestro.cli.report.ScreenshotDebugMetadata
+import maestro.cli.report.FlowAIOutput
+import maestro.cli.report.FlowDebugOutput
 import maestro.cli.runner.resultview.ResultView
 import maestro.cli.runner.resultview.UiState
 import maestro.orchestra.ApplyConfigurationCommand
 import maestro.orchestra.CompositeCommand
 import maestro.orchestra.MaestroCommand
-import maestro.orchestra.MaestroConfig
 import maestro.orchestra.Orchestra
-import maestro.orchestra.OrchestraAppState
 import maestro.orchestra.yaml.YamlCommandReader
 import maestro.utils.Insight
 import org.slf4j.LoggerFactory
-import java.io.File
 import java.util.IdentityHashMap
+import maestro.cli.util.ScreenshotUtils
 
+/**
+ * Knows how to run a list of Maestro commands and update the UI.
+ *
+ * Should not know what a "flow" is (apart from knowing a name, for display purposes).
+ */
 object MaestroCommandRunner {
 
     private val logger = LoggerFactory.getLogger(MaestroCommandRunner::class.java)
 
     fun runCommands(
+        flowName: String,
         maestro: Maestro,
         device: Device?,
         view: ResultView,
         commands: List<MaestroCommand>,
-        debug: FlowDebugMetadata
-    ): Result {
+        debugOutput: FlowDebugOutput,
+        aiOutput: FlowAIOutput,
+    ): Boolean {
         val config = YamlCommandReader.getConfig(commands)
-        val initFlow = config?.initFlow
         val onFlowComplete = config?.onFlowComplete
         val onFlowStart = config?.onFlowStart
 
         val commandStatuses = IdentityHashMap<MaestroCommand, CommandStatus>()
         val commandMetadata = IdentityHashMap<MaestroCommand, Orchestra.CommandMetadata>()
 
-        // debug
-        val debugCommands = debug.commands
-        val debugScreenshots = debug.screenshots
-
-        fun takeDebugScreenshot(status: CommandStatus): File? {
-            val containsFailed = debugScreenshots.any { it.status == CommandStatus.FAILED }
-
-            // Avoids duplicate failed images from parent commands
-            if (containsFailed && status == CommandStatus.FAILED) {
-                return null
-            }
-
-            val result = kotlin.runCatching {
-                val out = File.createTempFile("screenshot-${System.currentTimeMillis()}", ".png")
-                    .also { it.deleteOnExit() } // save to another dir before exiting
-                maestro.takeScreenshot(out, false)
-                debugScreenshots.add(
-                    ScreenshotDebugMetadata(
-                        screenshot = out,
-                        timestamp = System.currentTimeMillis(),
-                        status = status
-                    )
-                )
-                out
-            }
-
-            return result.getOrNull()
-        }
-
         fun refreshUi() {
             view.setState(
                 UiState.Running(
+                    flowName = flowName,
                     device = device,
-                    initCommands = toCommandStates(
-                        initFlow?.commands ?: emptyList(),
-                        commandStatuses,
-                        commandMetadata
-                    ),
                     onFlowStartCommands = toCommandStates(
                         onFlowStart?.commands ?: emptyList(),
                         commandStatuses,
@@ -119,11 +90,11 @@ object MaestroCommandRunner {
         refreshUi()
 
         val orchestra = Orchestra(
-            maestro,
+            maestro = maestro,
             onCommandStart = { _, command ->
                 logger.info("${command.description()} RUNNING")
                 commandStatuses[command] = CommandStatus.RUNNING
-                debugCommands[command] = CommandDebugMetadata(
+                debugOutput.commands[command] = CommandDebugMetadata(
                     timestamp = System.currentTimeMillis(),
                     status = CommandStatus.RUNNING
                 )
@@ -133,25 +104,25 @@ object MaestroCommandRunner {
             onCommandComplete = { _, command ->
                 logger.info("${command.description()} COMPLETED")
                 commandStatuses[command] = CommandStatus.COMPLETED
-                debugCommands[command]?.let {
-                    it.status = CommandStatus.COMPLETED
-                    it.calculateDuration()
+                debugOutput.commands[command]?.apply {
+                    status = CommandStatus.COMPLETED
+                    calculateDuration()
                 }
                 refreshUi()
             },
             onCommandFailed = { _, command, e ->
-                debugCommands[command]?.let {
-                    it.status = CommandStatus.FAILED
-                    it.calculateDuration()
-                    it.error = e
+                debugOutput.commands[command]?.apply {
+                    status = CommandStatus.FAILED
+                    calculateDuration()
+                    error = e
                 }
 
-                takeDebugScreenshot(CommandStatus.FAILED)
+                ScreenshotUtils.takeDebugScreenshot(maestro, debugOutput, CommandStatus.FAILED)
 
                 if (e !is MaestroException) {
                     throw e
                 } else {
-                    debug.exception = e
+                    debugOutput.exception = e
                 }
 
                 logger.info("${command.description()} FAILED")
@@ -162,16 +133,27 @@ object MaestroCommandRunner {
             onCommandSkipped = { _, command ->
                 logger.info("${command.description()} SKIPPED")
                 commandStatuses[command] = CommandStatus.SKIPPED
-                debugCommands[command]?.let {
-                    it.status = CommandStatus.SKIPPED
+                debugOutput.commands[command]?.apply {
+                    status = CommandStatus.SKIPPED
                 }
+                refreshUi()
+            },
+            onCommandWarned = { _, command ->
+                logger.info("${command.description()} WARNED")
+                commandStatuses[command] = CommandStatus.WARNED
+                debugOutput.commands[command]?.apply {
+                    status = CommandStatus.WARNED
+                }
+
+                ScreenshotUtils.takeDebugScreenshot(maestro, debugOutput, CommandStatus.WARNED)
+
                 refreshUi()
             },
             onCommandReset = { command ->
                 logger.info("${command.description()} PENDING")
                 commandStatuses[command] = CommandStatus.PENDING
-                debugCommands[command]?.let {
-                    it.status = CommandStatus.PENDING
+                debugOutput.commands[command]?.apply {
+                    status = CommandStatus.PENDING
                 }
                 refreshUi()
             },
@@ -180,11 +162,20 @@ object MaestroCommandRunner {
                 commandMetadata[command] = metadata
                 refreshUi()
             },
+            onCommandGeneratedOutput = { command, defects, screenshot ->
+                logger.info("${command.description()} generated output")
+                val screenshotPath = ScreenshotUtils.writeAIscreenshot(screenshot)
+                aiOutput.screenOutputs.add(
+                    SingleScreenFlowAIOutput(
+                        screenshotPath = screenshotPath,
+                        defects = defects,
+                    )
+                )
+            }
         )
 
         val flowSuccess = orchestra.runFlow(commands)
-
-        return Result(flowSuccess = flowSuccess, cachedAppState = null)
+        return flowSuccess
     }
 
     private fun toCommandStates(
@@ -216,10 +207,4 @@ object MaestroCommandRunner {
                 )
             }
     }
-
-    data class Result(
-        val flowSuccess: Boolean,
-        val cachedAppState: OrchestraAppState?
-    )
 }
-

@@ -69,10 +69,9 @@ object YamlCommandReader {
 
     // Files to watch for changes. Includes any referenced files.
     fun getWatchFiles(flowPath: Path): List<Path> = mapParsingErrors(flowPath) {
-        val (config, commands) = readConfigAndCommands(flowPath)
-        val configWatchFiles = config.getWatchFiles(flowPath)
+        val (_, commands) = readConfigAndCommands(flowPath)
         val commandWatchFiles = commands.flatMap { it.getWatchFiles(flowPath) }
-        (listOf(flowPath) + configWatchFiles + commandWatchFiles)
+        (listOf(flowPath) + commandWatchFiles)
             .filter { it.absolute().parent?.isDirectory() ?: false }
     }
 
@@ -115,7 +114,7 @@ object YamlCommandReader {
         val commands = parser.readValueAs<List<YamlFluentCommand>>(
             object : TypeReference<List<YamlFluentCommand>>() {}
         )
-        return config to commands
+        return config.copy(env = config.env) to commands
     }
 
     private fun <T> mapParsingErrors(path: Path, block: () -> T): T {

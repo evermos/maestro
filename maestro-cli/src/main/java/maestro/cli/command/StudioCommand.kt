@@ -3,6 +3,7 @@ package maestro.cli.command
 import maestro.cli.App
 import maestro.cli.CliError
 import maestro.cli.DisableAnsiMixin
+import maestro.cli.ShowHelpMixin
 import maestro.cli.report.TestDebugReporter
 import maestro.cli.session.MaestroSessionManager
 import maestro.cli.view.blue
@@ -26,6 +27,9 @@ class StudioCommand : Callable<Int> {
     @CommandLine.Mixin
     var disableANSIMixin: DisableAnsiMixin? = null
 
+    @CommandLine.Mixin
+    var showHelpMixin: ShowHelpMixin? = null
+
     @CommandLine.ParentCommand
     private val parent: App? = null
 
@@ -42,17 +46,15 @@ class StudioCommand : Callable<Int> {
     private var noWindow: Boolean? = null
 
     override fun call(): Int {
-        if (parent?.platform != null) {
-            throw CliError("--platform option was deprecated. You can remove it to run your test.")
-        }
 
-        TestDebugReporter.install(debugOutputPathAsString = debugOutput)
+        TestDebugReporter.install(debugOutputPathAsString = debugOutput, printToConsole = parent?.verbose == true)
 
         MaestroSessionManager.newSession(
             host = parent?.host,
             port = parent?.port,
             driverHostPort = parent?.port,
             deviceId = parent?.deviceId,
+            platform = parent?.platform,
             isStudio = true
         ) { session ->
             val port = getFreePort()

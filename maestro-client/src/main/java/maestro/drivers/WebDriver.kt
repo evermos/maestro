@@ -53,10 +53,10 @@ class WebDriver(val isStudio: Boolean) : Driver {
     }
 
     override fun open() {
-        System.setProperty("webdriver.chrome.silentOutput", "true");
-        System.setProperty(ChromeDriverService.CHROME_DRIVER_SILENT_OUTPUT_PROPERTY, "true");
-        Logger.getLogger("org.openqa.selenium").level = Level.OFF;
-        Logger.getLogger("org.openqa.selenium.devtools.CdpVersionFinder").level = Level.OFF;
+        System.setProperty("webdriver.chrome.silentOutput", "true")
+        System.setProperty(ChromeDriverService.CHROME_DRIVER_SILENT_OUTPUT_PROPERTY, "true")
+        Logger.getLogger("org.openqa.selenium").level = Level.OFF
+        Logger.getLogger("org.openqa.selenium.devtools.CdpVersionFinder").level = Level.OFF
 
         val driverService = ChromeDriverService.Builder()
             .withLogLevel(ChromiumDriverLogLevel.OFF)
@@ -66,6 +66,7 @@ class WebDriver(val isStudio: Boolean) : Driver {
             driverService,
             ChromeOptions().apply {
                 addArguments("--remote-allow-origins=*")
+                addArguments("--disable-search-engine-choice-screen")
                 if (isStudio) {
                     addArguments("--headless=new")
                     addArguments("--window-size=1024,768")
@@ -170,8 +171,19 @@ class WebDriver(val isStudio: Boolean) : Driver {
         ensureOpen()
 
         // retrieve view hierarchy from DOM
-        val contentDesc = executeJS("return window.maestro.getContentDescription()")
-            ?: throw IllegalStateException("Could not retrieve hierarchy through maestro.getContentDescription()")
+        // There are edge cases where executeJS returns null, and we cannot get the hierarchy. In this situation
+        // we retry multiple times until throwing an error eventually. (See issue #1936)
+        var contentDesc: Any? = null
+        var retry = 0
+        while (contentDesc == null) {
+            contentDesc = executeJS("return window.maestro.getContentDescription()")
+            if (contentDesc == null) {
+                retry++
+            }
+            if (retry == RETRY_FETCHING_CONTENT_DESCRIPTION) {
+                throw IllegalStateException("Could not retrieve hierarchy through maestro.getContentDescription() (tried $retry times")
+            }
+        }
 
         // parse into TreeNodes
         fun parse(domRepresentation: Map<String, Any>): TreeNode {
@@ -361,7 +373,7 @@ class WebDriver(val isStudio: Boolean) : Driver {
         return true
     }
 
-    override fun waitForAppToSettle(initialHierarchy: ViewHierarchy?, appId: String?, timeoutMs: Int?): ViewHierarchy? {
+    override fun waitForAppToSettle(initialHierarchy: ViewHierarchy?, appId: String?, timeoutMs: Int?): ViewHierarchy {
         return ScreenshotUtils.waitForAppToSettle(initialHierarchy, this)
     }
 
@@ -393,5 +405,6 @@ class WebDriver(val isStudio: Boolean) : Driver {
 
     companion object {
         private const val SCREENSHOT_DIFF_THRESHOLD = 0.005
+        private const val RETRY_FETCHING_CONTENT_DESCRIPTION = 10
     }
 }

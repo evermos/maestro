@@ -47,14 +47,6 @@ class PlainTextResultView: ResultView {
             }
         }
 
-        if (state.initCommands.isNotEmpty()) {
-            if (shouldPrintStep()) {
-                println("  > Init Flow")
-            }
-
-            renderCommandsPlainText(state.initCommands)
-        }
-
         if (state.onFlowStartCommands.isNotEmpty()) {
             if (shouldPrintStep()) {
                 println("  > On Flow Start")
@@ -64,7 +56,7 @@ class PlainTextResultView: ResultView {
         }
 
         if (shouldPrintStep()) {
-            println(" > Flow")
+            println(" > Flow ${state.flowName}")
         }
 
         renderCommandsPlainText(state.commands)
@@ -125,7 +117,7 @@ class PlainTextResultView: ResultView {
                     }
                 }
 
-                CommandStatus.COMPLETED, CommandStatus.FAILED, CommandStatus.SKIPPED -> {
+                CommandStatus.COMPLETED, CommandStatus.FAILED, CommandStatus.SKIPPED, CommandStatus.WARNED -> {
                     registerStep()
                     if (shouldPrintStep()) {
                         println(" " + status(command.status))
@@ -156,6 +148,7 @@ class PlainTextResultView: ResultView {
             CommandStatus.RUNNING -> "RUNNING"
             CommandStatus.PENDING -> "PENDING"
             CommandStatus.SKIPPED -> "SKIPPED"
+            CommandStatus.WARNED -> "WARNED"
         }
     }
 }

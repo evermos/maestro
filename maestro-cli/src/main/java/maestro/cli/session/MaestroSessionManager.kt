@@ -21,7 +21,6 @@ package maestro.cli.session
 
 import dadb.Dadb
 import dadb.adbserver.AdbServer
-import io.grpc.ManagedChannelBuilder
 import ios.LocalIOSDevice
 import ios.simctl.SimctlIOSDevice
 import ios.xctest.XCTestIOSDevice
@@ -30,12 +29,9 @@ import maestro.cli.device.Device
 import maestro.cli.device.PickDeviceInteractor
 import maestro.cli.device.Platform
 import maestro.cli.util.ScreenReporter
-import maestro.debuglog.IOSDriverLogger
 import maestro.drivers.AndroidDriver
 import maestro.drivers.IOSDriver
 import org.slf4j.LoggerFactory
-import sun.misc.Signal
-import sun.misc.SignalHandler
 import util.XCRunnerCLIUtils
 import xcuitest.XCTestClient
 import xcuitest.XCTestDriverClient
@@ -44,12 +40,10 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
-import kotlin.system.exitProcess
 
 object MaestroSessionManager {
     private const val defaultHost = "localhost"
     private const val defaultXctestHost = "[::1]"
-    private const val defaultIdbPort = 10882
     private const val defaultXcTestPort = 22087
 
     private val executor = Executors.newScheduledThreadPool(1)
@@ -60,6 +54,7 @@ object MaestroSessionManager {
         port: Int?,
         driverHostPort: Int?,
         deviceId: String?,
+        platform: String? = null,
         isStudio: Boolean = false,
         block: (MaestroSession) -> T,
     ): T {
@@ -67,13 +62,15 @@ object MaestroSessionManager {
             host = host,
             port = port,
             driverHostPort = driverHostPort,
-            deviceId = deviceId
+            deviceId = deviceId,
+            platform = Platform.fromString(platform)
         )
         val sessionId = UUID.randomUUID().toString()
 
         val heartbeatFuture = executor.scheduleAtFixedRate(
             {
                 try {
+                    Thread.sleep(1000) // Add a 1-second delay here for fixing race condition
                     SessionStore.heartbeat(sessionId, selectedDevice.platform)
                 } catch (e: Exception) {
                     logger.error("Failed to record heartbeat", e)
@@ -101,7 +98,6 @@ object MaestroSessionManager {
                 session.close()
             }
         })
-        Signal.handle(CustomSignalHandler.suspendSignal, CustomSignalHandler())
 
         return block(session)
     }
@@ -111,6 +107,7 @@ object MaestroSessionManager {
         port: Int?,
         driverHostPort: Int?,
         deviceId: String?,
+        platform: Platform? = null,
     ): SelectedDevice {
         if (deviceId == "chromium") {
             return SelectedDevice(
@@ -119,7 +116,7 @@ object MaestroSessionManager {
         }
 
         if (host == null) {
-            val device = PickDeviceInteractor.pickDevice(deviceId, driverHostPort)
+            val device = PickDeviceInteractor.pickDevice(deviceId, driverHostPort, platform)
 
             return SelectedDevice(
                 platform = device.platform,
@@ -216,20 +213,6 @@ object MaestroSessionManager {
         }
     }
 
-    private fun isIOS(host: String?, port: Int?): Boolean {
-        return try {
-            val channel = ManagedChannelBuilder.forAddress(host ?: defaultHost, port ?: defaultIdbPort)
-                .usePlaintext()
-                .build()
-
-            channel.shutdownNow()
-
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     private fun pickAndroidDevice(
         host: String?,
         port: Int?,
@@ -295,15 +278,14 @@ object MaestroSessionManager {
     ): Maestro {
 
         val xcTestInstaller = LocalXCTestInstaller(
-            logger = IOSDriverLogger(LocalXCTestInstaller::class.java),
             deviceId = deviceId,
             host = defaultXctestHost,
-            defaultPort = driverHostPort ?: defaultXcTestPort
+            defaultPort = driverHostPort ?: defaultXcTestPort,
+            enableXCTestOutputFileLogging = true,
         )
 
         val xcTestDriverClient = XCTestDriverClient(
             installer = xcTestInstaller,
-            logger = IOSDriverLogger(XCTestDriverClient::class.java),
             client = XCTestClient(defaultXctestHost, driverHostPort ?: defaultXcTestPort),
         )
 
@@ -311,7 +293,6 @@ object MaestroSessionManager {
             deviceId = deviceId,
             client = xcTestDriverClient,
             getInstalledApps = { XCRunnerCLIUtils.listApps(deviceId) },
-            logger = IOSDriverLogger(XCTestIOSDevice::class.java),
         )
 
         val simctlIOSDevice = SimctlIOSDevice(
@@ -351,18 +332,6 @@ object MaestroSessionManager {
 
         fun close() {
             maestro.close()
-        }
-    }
-
-    private class CustomSignalHandler() : SignalHandler {
-        override fun handle(signal: Signal) {
-            when (signal) {
-                suspendSignal -> exitProcess(0)
-            }
-        }
-
-        companion object {
-            val suspendSignal = Signal("TSTP")
         }
     }
 }

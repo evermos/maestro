@@ -22,18 +22,20 @@ object PickDeviceView {
         return pickIndex(devices)
     }
 
-    fun requestDeviceOptions(): DeviceStartOptions {
-        PrintUtils.message("Please specify a device platform [android, ios, web]:")
-        val platform = readlnOrNull()?.lowercase()?.let {
-            when (it) {
-                "android" -> Platform.ANDROID
-                "ios" -> Platform.IOS
-                "web" -> Platform.WEB
-                else -> throw CliError("Unsupported platform: $it")
-            }
-        } ?: throw CliError("Please specify a platform")
+    fun requestDeviceOptions(platform: Platform? = null): DeviceStartOptions {
+        val selectedPlatform = if (platform == null) {
+            PrintUtils.message("Please specify a device platform [android, ios, web]:")
+            readlnOrNull()?.lowercase()?.let {
+                when (it) {
+                    "android" -> Platform.ANDROID
+                    "ios" -> Platform.IOS
+                    "web" -> Platform.WEB
+                    else -> throw CliError("Unsupported platform: $it")
+                }
+            } ?: throw CliError("Please specify a platform")
+        } else platform
 
-        val version = platform.let {
+        val version = selectedPlatform.let {
             when (it) {
                 Platform.IOS -> {
                     PrintUtils.message("Please specify iOS version ${DeviceConfigIos.versions}: Press ENTER for default (${DeviceConfigIos.defaultVersion})")
@@ -50,7 +52,7 @@ object PickDeviceView {
         }
 
         return DeviceStartOptions(
-            platform = platform,
+            platform = selectedPlatform,
             osVersion = version,
             forceCreate = false
         )
@@ -68,7 +70,7 @@ object PickDeviceView {
     private fun <T> pickIndex(data: List<T>): T {
         println()
         while (!Thread.interrupted()) {
-            val index = readLine()?.toIntOrNull() ?: 0
+            val index = readlnOrNull()?.toIntOrNull() ?: 0
 
             if (index < 1 || index > data.size) {
                 printEnterNumberPrompt()

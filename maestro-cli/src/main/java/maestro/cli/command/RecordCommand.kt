@@ -22,6 +22,7 @@ package maestro.cli.command
 import maestro.cli.App
 import maestro.cli.CliError
 import maestro.cli.DisableAnsiMixin
+import maestro.cli.ShowHelpMixin
 import maestro.cli.api.ApiClient
 import maestro.cli.report.TestDebugReporter
 import maestro.cli.runner.TestRunner
@@ -34,6 +35,7 @@ import picocli.CommandLine
 import picocli.CommandLine.Option
 import java.io.File
 import java.util.concurrent.Callable
+import maestro.cli.device.Platform
 
 @CommandLine.Command(
     name = "record",
@@ -46,11 +48,17 @@ class RecordCommand : Callable<Int> {
     @CommandLine.Mixin
     var disableANSIMixin: DisableAnsiMixin? = null
 
+    @CommandLine.Mixin
+    var showHelpMixin: ShowHelpMixin? = null
+
     @CommandLine.ParentCommand
     private val parent: App? = null
 
     @CommandLine.Parameters
     private lateinit var flowFile: File
+
+    @Option(names = ["--config"], description = ["Optional .yaml configuration file for Flows. If not provided, Maestro will look for a config.yaml file in the root directory."])
+    private var configFile: File? = null
 
     @Option(names = ["-e", "--env"])
     private var env: Map<String, String> = emptyMap()
@@ -72,19 +80,18 @@ class RecordCommand : Callable<Int> {
             )
         }
 
-        if (parent?.platform != null) {
-            throw CliError("--platform option was deprecated. You can remove it to run your test.")
+        if (configFile != null && configFile?.exists()?.not() == true) {
+            throw CliError("The config file ${configFile?.absolutePath} does not exist.")
         }
-
-
-        TestDebugReporter.install(debugOutputPathAsString = debugOutput)
+        TestDebugReporter.install(debugOutputPathAsString = debugOutput, printToConsole = parent?.verbose == true)
         val path = TestDebugReporter.getDebugOutputPath()
 
         return MaestroSessionManager.newSession(
             host = parent?.host,
             port = parent?.port,
             driverHostPort = parent?.port,
-            deviceId = parent?.deviceId
+            deviceId = parent?.deviceId,
+            platform = parent?.platform,
         ) { session ->
             val maestro = session.maestro
             val device = session.device

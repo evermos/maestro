@@ -32,10 +32,11 @@ data class ElementSelector(
     val rightOf: ElementSelector? = null,
     val containsChild: ElementSelector? = null,
     val containsDescendants: List<ElementSelector>? = null,
-    val optional: Boolean = false,
     val traits: List<ElementTrait>? = null,
     val index: String? = null,
     val enabled: Boolean? = null,
+    @Deprecated("This is a deprecated field, please use the optional in commands interface")
+    val optional: Boolean = false,
     val selected: Boolean? = null,
     val checked: Boolean? = null,
     val focused: Boolean? = null,
@@ -122,13 +123,7 @@ data class ElementSelector(
             descriptions.add("Child of: ${it.description()}")
         }
 
-        val combined = descriptions.joinToString(", ")
-
-        return if (optional) {
-            "(Optional) $combined"
-        } else {
-            combined
-        }
+        return descriptions.joinToString(", ")
     }
 
 }

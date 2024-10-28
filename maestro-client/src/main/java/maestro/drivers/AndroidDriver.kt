@@ -68,7 +68,7 @@ class AndroidDriver(
         .usePlaintext()
         .build()
     private val blockingStub = MaestroDriverGrpc.newBlockingStub(channel)
-    private val blockingStubWithTimeout get() = blockingStub.withDeadlineAfter(40, TimeUnit.SECONDS)
+    private val blockingStubWithTimeout get() = blockingStub.withDeadlineAfter(120, TimeUnit.SECONDS)
     private val asyncStub = MaestroDriverGrpc.newStub(channel)
     private val documentBuilderFactory = DocumentBuilderFactory.newInstance()
 
@@ -525,6 +525,7 @@ class AndroidDriver(
         val appNameResult = runCatching {
             val apkFile = AndroidAppFiles.getApkFile(dadb, appId)
             val appName = ApkFile(apkFile).apkMeta.name
+            apkFile.delete()
             appName
         }
         if (appNameResult.isSuccess) {
@@ -627,7 +628,7 @@ class AndroidDriver(
         return false
     }
 
-    override fun waitForAppToSettle(initialHierarchy: ViewHierarchy?, appId: String?, timeoutMs: Int?): ViewHierarchy? {
+    override fun waitForAppToSettle(initialHierarchy: ViewHierarchy?, appId: String?, timeoutMs: Int?): ViewHierarchy {
         return if (appId != null) {
             waitForWindowToSettle(appId, initialHierarchy, timeoutMs)
         } else {
@@ -775,7 +776,9 @@ class AndroidDriver(
     private fun setAllPermissions(appId: String, permissionValue: String) {
         val permissionsResult = runCatching {
             val apkFile = AndroidAppFiles.getApkFile(dadb, appId)
-            ApkFile(apkFile).apkMeta.usesPermissions
+            val permissions = ApkFile(apkFile).apkMeta.usesPermissions
+            apkFile.delete()
+            permissions
         }
         if (permissionsResult.isSuccess) {
             permissionsResult.getOrNull()?.let {
@@ -964,6 +967,7 @@ class AndroidDriver(
         if (!isPackageInstalled("dev.mobile.maestro")) {
             throw IllegalStateException("dev.mobile.maestro was not installed")
         }
+        maestroAppApk.delete()
     }
 
     private fun installMaestroServerApp() {
@@ -981,6 +985,7 @@ class AndroidDriver(
         if (!isPackageInstalled("dev.mobile.maestro.test")) {
             throw IllegalStateException("dev.mobile.maestro.test was not installed")
         }
+        maestroServerApk.delete()
     }
 
     private fun installMaestroApks() {
