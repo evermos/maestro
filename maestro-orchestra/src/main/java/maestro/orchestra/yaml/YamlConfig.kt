@@ -16,6 +16,7 @@ import kotlin.io.path.isDirectory
 data class YamlConfig(
     val name: String?,
     val appId: String,
+    val retryTestsCount: Int?,
     val initFlow: YamlInitFlowUnion?,
     val tags: List<String>? = emptyList(),
     val env: Map<String, String> = emptyMap(),
@@ -39,6 +40,7 @@ data class YamlConfig(
         val config = MaestroConfig(
             appId = appId,
             name = name,
+            retryTestsCount = retryTestsCount,
             tags = tags,
             initFlow = initFlow(flowPath),
             ext = ext.toMap(),

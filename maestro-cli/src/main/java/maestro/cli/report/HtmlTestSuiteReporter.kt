@@ -205,7 +205,7 @@ class HtmlTestSuiteReporter : TestSuiteReporter {
                             div(classes = "text-center") {
                               if(flow.failure != null) {
                                 img(classes = "img-fluid") {
-                                  attributes["src"] = "screenshot-❌-(${flow.name}).png"
+                                  attributes["src"] = "screenshot-failed-(${flow.name}).png"
                                   attributes["width"] = "50%"
                                 }
                               }

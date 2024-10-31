@@ -82,56 +82,69 @@ class Orchestra(
 
         initJsEngine(config)
 
-        val state = initState ?: config?.initFlow?.let {
-            runInitFlow(it) ?: return false
-        }
+        var endFlow = false
+        var i = 0
+        var retryTestCount = config?.retryTestsCount ?: 1
+        println(retryTestCount)
 
-        if (state != null) {
-            maestro.clearAppState(state.appId)
-        }
-
-        onFlowStart(commands)
-
-        executeDefineVariablesCommands(commands, config)
-        // filter out DefineVariablesCommand to not execute it twice
-        val filteredCommands = commands.filter { it.asCommand() !is DefineVariablesCommand }
-
-        var flowSuccess = false
-        var exception: Throwable? = null
-        try {
-            val onStartSuccess = config?.onFlowStart?.commands?.let {
-                executeCommands(
-                    commands = it,
-                    config = config,
-                    shouldReinitJsEngine = false,
-                )
-            } ?: true
-
-            if (onStartSuccess) {
-                flowSuccess = executeCommands(
-                    commands = filteredCommands,
-                    config = config,
-                    shouldReinitJsEngine = false,
-                ).also {
-                    // close existing screen recording, if left open.
-                    screenRecording?.close()
-                }
+        while(endFlow != true && i < retryTestCount){
+            
+            val state = initState ?: config?.initFlow?.let {
+                runInitFlow(it) ?: return false
             }
-        } catch (e: Throwable) {
-            exception = e
-        } finally {
-            val onCompleteSuccess = config?.onFlowComplete?.commands?.let {
-                executeCommands(
-                    commands = it,
-                    config = config,
-                    shouldReinitJsEngine = false,
-                )
-            } ?: true
 
-            exception?.let { throw it }
+            if (state != null) {
+                maestro.clearAppState(state.appId)
+            }
 
-            return onCompleteSuccess && flowSuccess
+            onFlowStart(commands)
+    
+            executeDefineVariablesCommands(commands, config)
+            // filter out DefineVariablesCommand to not execute it twice
+            val filteredCommands = commands.filter { it.asCommand() !is DefineVariablesCommand }
+    
+            var flowSuccess = false
+            var exception: Throwable? = null
+            try {
+                val onStartSuccess = config?.onFlowStart?.commands?.let {
+                    executeCommands(
+                        commands = it,
+                        config = config,
+                        shouldReinitJsEngine = false,
+                    )
+                } ?: true
+    
+                if (onStartSuccess) {
+                    flowSuccess = executeCommands(
+                        commands = filteredCommands,
+                        config = config,
+                        shouldReinitJsEngine = false,
+                    ).also {
+                        // close existing screen recording, if left open.
+                        screenRecording?.close()
+                    }
+                }
+            } catch (e: Throwable) {
+                exception = e
+            } finally {
+                val onCompleteSuccess = config?.onFlowComplete?.commands?.let {
+                    executeCommands(
+                        commands = it,
+                        config = config,
+                        shouldReinitJsEngine = false,
+                    )
+                } ?: true
+    
+                exception?.let { throw it }
+                
+                if(onCompleteSuccess && flowSuccess) {
+                    endFlow = true
+                }
+                i++
+                // return onCompleteSuccess && flowSuccess
+            }
         }
+        return endFlow
     }
 
     /**

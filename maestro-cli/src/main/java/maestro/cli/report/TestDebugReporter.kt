@@ -61,8 +61,8 @@ object TestDebugReporter {
         // screenshots
         data.screenshots.forEach {
             val status = when (it.status) {
-                CommandStatus.COMPLETED -> "✅"
-                CommandStatus.FAILED -> "❌"
+                CommandStatus.COMPLETED -> "completed"
+                CommandStatus.FAILED -> "failed"
                 else -> "﹖"
             }
             val name = "screenshot-$status-(${flowName}).png"
