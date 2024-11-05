@@ -84,7 +84,8 @@ class Orchestra(
 
         var endFlow = false
         var i = 0
-        var retryTestCount = config?.retryTestsCount ?: 1
+        var defaultRetryCount = 3
+        var retryTestCount = config?.retryTestsCount ?: defaultRetryCount
 
         while(endFlow != true && i < retryTestCount){
             
