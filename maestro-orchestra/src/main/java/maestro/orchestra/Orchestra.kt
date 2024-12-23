@@ -139,6 +139,8 @@ class Orchestra(
                 
                 if(onCompleteSuccess && flowSuccess) {
                     endFlow = true
+                } else {
+                    println("Retrying test " + (i+1) + " of " + retryTestCount)
                 }
                 i++
                 // return onCompleteSuccess && flowSuccess
